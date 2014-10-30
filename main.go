@@ -1,21 +1,33 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
+	"time"
 
 	"github.com/codegangsta/cli"
 	"github.com/streadway/amqp"
 )
 
 type Options struct {
-	Key      string
 	Amqpurl  string
 	Topic    string
 	Exchange string
 	Queue    string
+	Ttl      int32
+}
+
+var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+func randSeq(n int) string {
+	rand.Seed(time.Now().UTC().UnixNano())
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(b)
 }
 
 func dump(options Options) {
@@ -29,11 +41,7 @@ func dump(options Options) {
 		log.Fatal(err)
 	}
 
-	queue := options.Queue
-	channel.QueueDeclare(queue, false, false, false, false, nil)
-	channel.QueueBind(queue, options.Topic, options.Exchange, false, nil)
-
-	messages, err := channel.Consume(queue, "qdump", false, false, false, false, nil)
+	messages, err := channel.Consume(options.Queue, "qdump", false, false, false, false, nil)
 	if err != nil {
 		log.Fatalf("basic.consume: %v", err)
 	}
@@ -41,17 +49,37 @@ func dump(options Options) {
 	go func() {
 		for message := range messages {
 			if message.ContentType == "application/json" {
-				if options.Key == "" {
-					fmt.Println(string(message.Body))
-				} else {
-					var body map[string]interface{}
-					json.Unmarshal(message.Body, &body)
-					fmt.Println(body[options.Key])
-				}
+				fmt.Println(string(message.Body))
 			}
 			message.Nack(false, true)
 		}
 	}()
+}
+
+func setup(options Options) {
+	connection, err := amqp.Dial(options.Amqpurl)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer connection.Close()
+	channel, err := connection.Channel()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var args amqp.Table
+	if options.Ttl > 0 {
+		args = amqp.Table{"x-expires": options.Ttl}
+	}
+
+	queue := options.Queue
+	if queue == "" {
+		queue = options.Exchange + "-" + options.Topic + "-" + randSeq(4)
+	}
+
+	channel.QueueDeclare(queue, false, false, false, false, args)
+	channel.QueueBind(queue, options.Topic, options.Exchange, false, nil)
+	fmt.Printf("queue %s decleared\n", queue)
 }
 
 func main() {
@@ -65,11 +93,6 @@ func main() {
 			Name:  "amqpurl",
 			Value: "amqp://localhost",
 			Usage: "amqp url",
-		},
-		cli.StringFlag{
-			Name:  "key",
-			Value: "",
-			Usage: "key",
 		},
 		cli.StringFlag{
 			Name:  "topic",
@@ -86,17 +109,26 @@ func main() {
 			Value: "",
 			Usage: "queue",
 		},
+		cli.IntFlag{
+			Name:  "ttl",
+			Value: 0,
+			Usage: "queue ttl",
+		},
 	}
 
 	app.Action = func(c *cli.Context) {
 		options := Options{
-			Key:      c.String("key"),
 			Amqpurl:  c.String("amqpurl"),
 			Exchange: c.String("exchange"),
 			Topic:    c.String("topic"),
 			Queue:    c.String("queue"),
+			Ttl:      int32(c.Int("ttl")) * 1000,
 		}
-		dump(options)
+		if options.Topic != "" && options.Exchange != "" {
+			setup(options)
+		} else if options.Queue != "" {
+			dump(options)
+		}
 	}
 
 	app.Run(os.Args)
