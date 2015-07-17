@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/codegangsta/cli"
@@ -12,11 +14,12 @@ import (
 )
 
 type Options struct {
-	Amqpurl  string
-	Topic    string
-	Exchange string
-	Queue    string
-	Ttl      int32
+	Amqpurl     string
+	Topic       string
+	Exchange    string
+	Queue       string
+	ContentType string
+	Ttl         int32
 }
 
 var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -82,6 +85,29 @@ func setup(options Options) {
 	fmt.Printf("queue %s decleared\n", queue)
 }
 
+func send(options Options, payload string) {
+	connection, err := amqp.Dial(options.Amqpurl)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer connection.Close()
+	channel, err := connection.Channel()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	msg := amqp.Publishing{
+		DeliveryMode: amqp.Persistent,
+		Timestamp:    time.Now(),
+		ContentType:  options.ContentType,
+		Body:         []byte(payload),
+	}
+	err = channel.Publish(options.Exchange, options.Topic, false, false, msg)
+	if err != nil {
+		log.Fatalf("failed to publish: %v", err)
+	}
+}
+
 func main() {
 
 	app := cli.NewApp()
@@ -89,11 +115,6 @@ func main() {
 	app.Usage = "dump amqp queue"
 
 	app.Flags = []cli.Flag{
-		cli.StringFlag{
-			Name:  "amqpurl",
-			Value: "amqp://localhost",
-			Usage: "amqp url",
-		},
 		cli.StringFlag{
 			Name:  "topic",
 			Value: "",
@@ -114,17 +135,39 @@ func main() {
 			Value: 0,
 			Usage: "queue ttl",
 		},
+		cli.StringFlag{
+			Name:  "content-type",
+			Value: "application/json",
+			Usage: "message content type",
+		},
 	}
 
 	app.Action = func(c *cli.Context) {
-		options := Options{
-			Amqpurl:  c.String("amqpurl"),
-			Exchange: c.String("exchange"),
-			Topic:    c.String("topic"),
-			Queue:    c.String("queue"),
-			Ttl:      int32(c.Int("ttl")) * 1000,
+		amqpurl := "amqp://localhost"
+		if len(c.Args()) > 0 {
+			amqpurl = c.Args()[0]
+			if !strings.HasPrefix(amqpurl, "amqp://") {
+				amqpurl = "amqp://" + amqpurl
+			}
 		}
-		if options.Topic != "" && options.Exchange != "" {
+		options := Options{
+			Amqpurl:     amqpurl,
+			Exchange:    c.String("exchange"),
+			Topic:       c.String("topic"),
+			Queue:       c.String("queue"),
+			Ttl:         int32(c.Int("ttl")) * 1000,
+			ContentType: c.String("content-type"),
+		}
+
+		fi, err := os.Stdin.Stat()
+		if err != nil {
+			panic(err)
+		}
+		if fi.Mode()&os.ModeNamedPipe != 0 {
+			bytes, _ := ioutil.ReadAll(os.Stdin)
+			payload := string(bytes)
+			send(options, payload)
+		} else if options.Topic != "" && options.Exchange != "" {
 			setup(options)
 		} else if options.Queue != "" {
 			dump(options)

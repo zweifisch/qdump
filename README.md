@@ -6,9 +6,7 @@ dump amqp queue
 declear a queue and bind to exchange
 
 ```sh
-qdump --amqpurl amqp://locahost \
-    --exchange exhange \
-    --topic topic
+qdump --exchange exhange --topic topic localhost
 ```
 
 specify queue name and queue ttl
@@ -32,3 +30,8 @@ get a single field
 qdump --queue some-queue | jq .fieldname
 ```
 
+publish a message
+
+```sh
+cat payload.json | qdump --exchange exchange --topic topic localhost
+```
